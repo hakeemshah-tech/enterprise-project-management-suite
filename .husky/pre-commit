@@ -1,0 +1,33 @@
+# EPMS pre-commit gate: formatting and static analysis only.
+# Scope is deliberately limited to Prettier + ESLint; commit-message linting
+# (Conventional Commits / changelog generation) is not enforced here.
+#
+# Both checks are non-mutating and run the same root scripts as the CI
+# static-analysis job, so a passing commit cannot fail the pipeline on style.
+# Never use `npm run lint` here: it resolves to `eslint --fix` in the backend,
+# which rewrites files and exits 0, reporting success instead of the problems.
+
+echo "🎨 Checking formatting (Prettier)..."
+npm run format:check
+FORMAT_EXIT_CODE=$?
+
+if [ $FORMAT_EXIT_CODE -ne 0 ]; then
+  echo ""
+  echo "❌ Formatting check failed."
+  echo "   Run 'npm run format' to auto-fix, then re-stage your changes."
+  exit 1
+fi
+
+echo "🔍 Running ESLint across all workspaces..."
+npm run lint:check
+LINT_EXIT_CODE=$?
+
+if [ $LINT_EXIT_CODE -ne 0 ]; then
+  echo ""
+  echo "❌ Lint failed! Please fix the errors before committing."
+  echo "   Run 'npm run lint' to see all errors."
+  exit 1
+fi
+
+echo "✅ Formatting and lint checks passed."
+exit 0

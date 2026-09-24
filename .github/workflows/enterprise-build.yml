@@ -1,0 +1,220 @@
+name: Enterprise Build
+
+# Internal CI gate for the Enterprise Project Management Suite.
+#
+# ACTIVE SCOPE: static analysis only (Prettier + ESLint across both workspaces).
+# The integration and production-image stages are present but disabled; see the
+# note above each one. Every check that runs here has been verified locally and
+# is expected to pass.
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: enterprise-build-${{ github.ref }}
+  cancel-in-progress: true
+
+# Disabled together with the integration stage: COMPOSE_FILE and
+# COMPOSE_PROJECT_NAME exist solely for the Compose-based jobs below. Restore
+# this block when re-enabling them.
+#
+# env:
+#   COMPOSE_FILE: docker-compose.dev.yml
+#   COMPOSE_PROJECT_NAME: epms-ci-${{ github.run_id }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Static analysis. Fails fast before any containers are built.
+  # ---------------------------------------------------------------------------
+  static-analysis:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        # Backend ESLint resolves generated Prisma types, so this must run first.
+        run: npm run prisma:generate --workspace=backend
+
+      - name: Prettier
+        # Root script fans out to every workspace that defines format:check,
+        # so the frontend is gated as strictly as the backend.
+        run: npm run format:check
+
+      - name: ESLint
+        # lint:check is the non-mutating variant in every workspace. The
+        # backend's `lint` script runs `eslint --fix`, which rewrites files and
+        # exits 0, so a gate built on it would report success instead of the
+        # problems. This is the same script .husky/pre-commit runs.
+        run: npm run lint:check
+
+# =============================================================================
+# DISABLED FOR THE STATIC PORTFOLIO BASELINE
+# =============================================================================
+# The two stages below are intentionally commented out. This repository is a
+# static, single-commit snapshot published for review, not a branch under active
+# feature development, and these stages have never been executed on a runner.
+# They are retained verbatim as a record of the intended pipeline topology.
+#
+# Before re-enabling, restore the `env:` block above and expect to resolve:
+#   - the backend e2e suite's database fixture expectations, which may exceed
+#     what the seeders in backend/src/seeder/ create;
+#   - Playwright's system dependencies, which the node:22-slim base image used
+#     by Dockerfile.dev does not ship.
+#
+# Stage 2: Integration. Backend and frontend suites run as isolated matrix
+# legs; each leg gets its own Compose project, so Postgres/Redis volumes and
+# networks never bleed between them.
+# -----------------------------------------------------------------------------
+#   integration:
+#     name: Integration (${{ matrix.suite }})
+#     runs-on: ubuntu-latest
+#     needs: static-analysis
+#     timeout-minutes: 40
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         suite: [backend, frontend]
+#
+#     steps:
+#       - uses: actions/checkout@v4
+#
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+#
+#       - name: Materialise CI environment file
+#         run: |
+#           # Compose reads .env optionally; CI supplies ephemeral, non-production
+#           # values. Secrets are generated per-run and never persisted.
+#           cp .env.example .env
+#           {
+#             echo "POSTGRES_USER=epms"
+#             echo "POSTGRES_PASSWORD=ci_ephemeral_password"
+#             echo "POSTGRES_DB=epms"
+#             echo "DATABASE_URL=postgresql://epms:ci_ephemeral_password@postgres:5432/epms"
+#             echo "NODE_ENV=development"
+#             echo "JWT_SECRET=$(openssl rand -base64 32)"
+#             echo "JWT_REFRESH_SECRET=$(openssl rand -base64 32)"
+#             echo "ENCRYPTION_KEY=$(openssl rand -hex 32)"
+#             echo "REDIS_HOST=redis"
+#             echo "REDIS_PORT=6379"
+#           } >> .env
+#
+#       - name: Isolate Compose project per suite
+#         run: echo "COMPOSE_PROJECT_NAME=epms-ci-${{ github.run_id }}-${{ matrix.suite }}" >> "$GITHUB_ENV"
+#
+#       - name: Build dev image
+#         run: docker compose -f "$COMPOSE_FILE" build app
+#
+#       - name: Start stack
+#         run: docker compose -f "$COMPOSE_FILE" up -d
+#
+#       - name: Wait for backend health
+#         run: |
+#           echo "Waiting for backend on :3000/api/health ..."
+#           for i in $(seq 1 60); do
+#             if curl -fsS http://localhost:3000/api/health >/dev/null 2>&1; then
+#               echo "Backend healthy after ${i} attempt(s)."
+#               exit 0
+#             fi
+#             sleep 5
+#           done
+#           echo "::error::Backend failed to become healthy within 300s."
+#           docker compose -f "$COMPOSE_FILE" logs --no-color app
+#           exit 1
+#
+#       - name: Backend integration suite
+#         if: matrix.suite == 'backend'
+#         run: |
+#           docker compose -f "$COMPOSE_FILE" exec -T app \
+#             npm run test:cov --workspace=backend
+#
+#       - name: Backend end-to-end suite
+#         if: matrix.suite == 'backend'
+#         run: |
+#           docker compose -f "$COMPOSE_FILE" exec -T app \
+#             npm run test:e2e --workspace=backend
+#
+#       - name: Wait for frontend
+#         if: matrix.suite == 'frontend'
+#         run: |
+#           echo "Waiting for frontend on :3001 ..."
+#           for i in $(seq 1 60); do
+#             if curl -fsS http://localhost:3001 >/dev/null 2>&1; then
+#               echo "Frontend up after ${i} attempt(s)."
+#               exit 0
+#             fi
+#             sleep 5
+#           done
+#           echo "::error::Frontend failed to respond within 300s."
+#           docker compose -f "$COMPOSE_FILE" logs --no-color app
+#           exit 1
+#
+#       - name: Frontend end-to-end suite
+#         if: matrix.suite == 'frontend'
+#         run: |
+#           docker compose -f "$COMPOSE_FILE" exec -T app \
+#             npm exec --workspace=frontend -- playwright install --with-deps chromium
+#           docker compose -f "$COMPOSE_FILE" exec -T app \
+#             npm run test:e2e --workspace=frontend
+#
+#       - name: Dump container logs on failure
+#         if: failure()
+#         run: docker compose -f "$COMPOSE_FILE" logs --no-color
+#
+#       - name: Upload test artifacts
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: ${{ matrix.suite }}-artifacts-${{ github.run_id }}
+#           path: |
+#             backend/coverage/**
+#             frontend/playwright-report/**
+#             frontend/test-results/**
+#           if-no-files-found: ignore
+#           retention-days: 14
+#
+#       - name: Tear down stack and volumes
+#         if: always()
+#         run: docker compose -f "$COMPOSE_FILE" down --volumes --remove-orphans
+#
+# -----------------------------------------------------------------------------
+# Stage 3: Production image build. Verifies Dockerfile.prod stays buildable.
+# Publishing to the internal registry is handled by the deploy pipeline, not here.
+# Note: `needs: integration` below must be updated if Stage 2 stays disabled.
+# -----------------------------------------------------------------------------
+#   production-image:
+#     name: Production Image Build
+#     runs-on: ubuntu-latest
+#     needs: integration
+#     timeout-minutes: 30
+#     steps:
+#       - uses: actions/checkout@v4
+#
+#       - uses: docker/setup-buildx-action@v3
+#
+#       - name: Build production image (no push)
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: Dockerfile.prod
+#           push: false
+#           load: false
+#           tags: registry.internal.company.com/pm-app:ci-${{ github.sha }}
+#           build-args: |
+#             BUILD_NUMBER=${{ github.sha }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max

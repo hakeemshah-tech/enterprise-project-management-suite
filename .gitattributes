@@ -1,0 +1,46 @@
+# Enforce LF in the working tree on every platform.
+#
+# Both workspaces set Prettier's `endOfLine: "lf"`. Without this file, a Windows
+# clone with core.autocrlf=true converts LF to CRLF on checkout, which makes
+# `prettier --check` fail on every source file and blocks the pre-commit hook.
+# Declaring eol=lf here overrides autocrlf and keeps the formatting baseline
+# reproducible for Windows, macOS, and Linux engineers alike.
+
+* text=auto eol=lf
+
+# Explicit text types (belt and braces for the files CI gates on)
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.prisma text eol=lf
+
+# Shell scripts and container entrypoints must stay LF or they fail to execute
+# inside Linux containers with "bad interpreter: no such file or directory".
+*.sh          text eol=lf
+.husky/*      text eol=lf
+Dockerfile*   text eol=lf
+.env.example  text eol=lf
+
+# Binary assets: never normalise, never diff as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.pdf   binary
+
+# SVG is text, but keep it out of diffs to stop generated icon churn.
+*.svg text eol=lf -diff
